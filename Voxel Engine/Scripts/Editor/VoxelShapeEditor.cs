@@ -4,7 +4,7 @@ using UnityEditor;
 namespace VoxelEngine.Rendering
 {
     [CustomEditor(typeof(VoxelShape))]
-    public class VoxelShapeEditor : Editor
+    public sealed class VoxelShapeEditor : Editor
     {
         public override void OnInspectorGUI()
         {
