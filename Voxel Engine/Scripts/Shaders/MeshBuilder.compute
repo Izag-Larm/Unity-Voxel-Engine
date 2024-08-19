@@ -1,0 +1,250 @@
+#pragma kernel Voxeler
+#pragma kernel MarchingCube
+
+#include "3D_SDFs.cginc"
+#include "MarchingTables.cginc"
+
+struct Primitive
+{
+    uint type;
+    float4x4 ltwm, wtlm, model;
+    int index, up, down, left, right;
+    uint dctype, lctype, rctype;
+    float dsmooth, lsmooth, rsmooth;
+};
+
+struct Unit
+{
+    uint3 id;
+    float3 uv;
+    float df;
+};
+
+struct Vertex
+{
+    float3 position, normal, uv;
+};
+
+struct Triangle
+{
+    uint valid;
+    Vertex a, b, c;
+};
+
+float3 _VolumeCenter, _VolumeSize;
+uint3 _VolumeSampling;
+float4x4 _LocalToWorld, _WorldToLocal;
+
+StructuredBuffer<Primitive> _Primitives;
+RWStructuredBuffer<float4> _Its;
+
+RWStructuredBuffer<Unit> _Units;
+RWStructuredBuffer<Triangle> _Triangles;
+
+float4 DistanceField(uint tid, float3 pos, float dmax, bool dfOnly = false)
+{
+    float4 result = float4(float(0.0f).xxx, dmax);
+    
+    uint count, stride;
+    _Primitives.GetDimensions(count, stride);
+    
+    uint spi = tid * count;
+    
+    for (uint i = 0; i < count; i++)
+    {
+        Primitive pr = _Primitives[count - 1 - i];
+        
+        if (pr.index >= 0)
+        {
+            float4 res = float4(pr.model[2].xyz, sdf(pr.type, pr.wtlm, 0.5f * pr.model[0], pr.model[1], pos, dmax));
+            
+            if (pr.down > 0)
+            {
+                uint down = spi + pr.down;
+                if (dfOnly)
+                    res.w = compose(pr.dctype, pr.dsmooth, res.w, _Its[down].w);
+                else
+                    res = compose(pr.dctype, pr.dsmooth, res, _Its[down]);
+            }
+            
+            if (pr.left > 0)
+            {
+                uint left = spi + pr.left;
+                if (dfOnly)
+                    res.w = compose(pr.lctype, pr.lsmooth, res.w, _Its[left].w);
+                else
+                    res = compose(pr.lctype, pr.lsmooth, res, _Its[left]);
+            }
+            
+            if (pr.right > 0)
+            {
+                uint right = spi + pr.right;
+                if (dfOnly)
+                    res.w = compose(pr.rctype, pr.rsmooth, res.w, _Its[right].w);
+                else
+                    res = compose(pr.rctype, pr.rsmooth, res, _Its[right]);
+            }
+            
+            uint index = spi + pr.index;
+            _Its[index] = res;
+            
+            if (pr.up < 0)
+            {
+                if (dfOnly)
+                    result.w = opUnion(result.w, res.w);
+                else
+                    result = opUnion(result, res);
+            }
+        }
+    }
+    
+    return result;
+}
+
+float3 CalculateNormal(uint tid, float3 pos, float dmax)
+{
+    const float2 eps2 = float2(10e-4f, 0.0f);
+    
+    float df = DistanceField(tid, pos, dmax, true).w;
+    float3 df3 = float3(
+        DistanceField(tid, pos - eps2.xyy, dmax, true).w,
+        DistanceField(tid, pos - eps2.yxy, dmax, true).w,
+        DistanceField(tid, pos - eps2.yyx, dmax, true).w);
+    
+    return normalize(df - df3);
+}
+
+uint Indexer(uint3 id, uint3 sampling)
+{
+    return id.z * (sampling.y * sampling.x) + id.y * sampling.x + id.x;
+}
+
+float3 LocalPosition(uint3 id, float3 size, uint3 sampling)
+{
+    return lerp(-0.5f * size, 0.5f * size, float3(id) / sampling);
+}
+
+float3 LocalPosition(float3 pos)
+{
+    //return pos - _VolumeCenter;
+    return mul(_WorldToLocal, float4(pos, 1.0f)).xyz;
+}
+
+float3 WorldPosition(float3 pos)
+{
+    //return pos + _VolumeCenter;
+    return mul(_LocalToWorld, float4(pos, 1.0f)).xyz;
+}
+
+float3 Interpolate(float3 pos1, float df1, float3 pos2, float df2, float eps)
+{
+    return (pos1 + (eps -df1) * (pos2 - pos1) / (df2 - df1));
+}
+
+Vertex CalcVertex(uint tid, Unit unit1, Unit unit2, float eps, float dmax)
+{
+    Vertex vert;
+            
+    float3 pos1 = LocalPosition(unit1.id, _VolumeSize, _VolumeSampling);
+    float3 pos2 = LocalPosition(unit2.id, _VolumeSize, _VolumeSampling);
+    
+    vert.position = WorldPosition(Interpolate(pos1, unit1.df, pos2, unit2.df, eps));
+    vert.uv = Interpolate(unit1.uv, unit1.df, unit2.uv, unit2.df, eps);
+    vert.normal = CalculateNormal(tid, vert.position, dmax);
+    
+    vert.position = LocalPosition(vert.position);
+    vert.normal = normalize(mul(_WorldToLocal, float4(vert.normal, 0.0f)).xyz);
+    
+    return vert;
+}
+
+[numthreads(4, 4, 4)]
+void Voxeler (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x > _VolumeSampling.x || id.y > _VolumeSampling.y || id.z > _VolumeSampling.z)
+    {
+        return;
+    }
+    
+    uint tid = Indexer(id, _VolumeSampling + 1);
+    float3 pos = WorldPosition(LocalPosition(id, _VolumeSize, _VolumeSampling));
+    
+    float4 result = DistanceField(tid, pos, 2 * length(_VolumeSize));
+    
+    _Units[tid].id = id, _Units[tid].df = result.w, _Units[tid].uv = result.xyz;
+}
+
+[numthreads(4, 4, 4)]
+void MarchingCube(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _VolumeSampling.x || id.y >= _VolumeSampling.y || id.z >= _VolumeSampling.z)
+    {
+        return;
+    }
+    
+    const float eps = -10e-4f;
+    
+    uint tid = Indexer(id, _VolumeSampling);
+    float dmax = 2 * length(_VolumeSize);
+    
+    const uint3 corners[8] =
+    {
+        uint3(id.x + 1, id.y, id.z),
+        uint3(id.x + 1, id.y, id.z + 1),
+        uint3(id.x, id.y, id.z + 1),
+        uint3(id.x, id.y, id.z),
+        uint3(id.x + 1, id.y + 1, id.z),
+        uint3(id.x + 1, id.y + 1, id.z + 1),
+        uint3(id.x, id.y + 1, id.z + 1),
+        uint3(id.x, id.y + 1, id.z),
+    };
+    
+    uint index = 0, fact = 1;
+    for (uint k = 0; k < 8; k++)
+    {
+        if (_Units[Indexer(corners[k], _VolumeSampling + 1)].df < eps)
+            index |= fact;
+        
+        fact *= 2;
+    }
+    
+    for (uint i = 0; i < 5; i++)
+    {
+        int trisIndex[3] = 
+        { 
+            TrianglesTable[index][3 * i], 
+            TrianglesTable[index][3 * i + 1], 
+            TrianglesTable[index][3 * i + 2],
+        };
+        
+        Triangle tri;
+        
+        if (trisIndex[0] < 0 || trisIndex[1] < 0 || trisIndex[2] < 0)
+        {
+            tri.valid = 0;
+            tri.a.position = 0.0f, tri.a.normal = 0.0f, tri.a.uv = 0.0f;
+            tri.b.position = 0.0f, tri.b.normal = 0.0f, tri.b.uv = 0.0f;
+            tri.c.position = 0.0f, tri.c.normal = 0.0f, tri.c.uv = 0.0f;
+        }
+        else
+        {   
+            Unit units[6] =
+            {
+                _Units[Indexer(corners[EdgesTable[trisIndex[0]].x], _VolumeSampling + 1)],
+                _Units[Indexer(corners[EdgesTable[trisIndex[0]].y], _VolumeSampling + 1)],
+                _Units[Indexer(corners[EdgesTable[trisIndex[1]].x], _VolumeSampling + 1)],
+                _Units[Indexer(corners[EdgesTable[trisIndex[1]].y], _VolumeSampling + 1)],
+                _Units[Indexer(corners[EdgesTable[trisIndex[2]].x], _VolumeSampling + 1)],
+                _Units[Indexer(corners[EdgesTable[trisIndex[2]].y], _VolumeSampling + 1)],
+            };
+            
+            tri.valid = 1;
+            tri.a = CalcVertex(tid, units[0], units[1], eps, dmax);
+            tri.b = CalcVertex(tid, units[2], units[3], eps, dmax);
+            tri.c = CalcVertex(tid, units[4], units[5], eps, dmax);
+        }
+        
+        _Triangles[5 * tid + i] = tri;
+    }
+
+}
