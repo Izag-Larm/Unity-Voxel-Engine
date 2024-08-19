@@ -45,7 +45,8 @@ namespace VoxelEngine.Rendering
         public readonly VoxelVertex[] Vertices { get { return new VoxelVertex[] { a, b, c }; } }
     }
 
-    public class VoxelShape : MonoBehaviour
+    [ExecuteInEditMode]
+    public sealed class VoxelShape : MonoBehaviour
     {
         public VoxelRenderingSettings Settings;
         public bool AutoRegenerate;
@@ -63,6 +64,15 @@ namespace VoxelEngine.Rendering
         private VoxelPrimitive[] m_Primitives = new VoxelPrimitive[0];
         private VoxelUnit[] m_Units = new VoxelUnit[0];
         private VoxelTriangle[] m_Triangles = new VoxelTriangle[0];
+
+        private bool m_HasChanged = false;
+        private Vector3 m_LastSize = Vector3.one;
+        private float m_LastRound = 0f;
+        private float m_LastSmooth = 0f;
+        private Vector3 m_LastVolumeCenter = Vector3.zero;
+        private Vector3 m_LastVolumeSize = Vector3.one;
+        private Vector3Int m_LastVolumeSampling = Vector3Int.one;
+        private VoxelRenderer[] m_Renderers = new VoxelRenderer[0];
 
         private MeshFilter m_Filter;
 
@@ -88,6 +98,8 @@ namespace VoxelEngine.Rendering
             get { return m_Primitives.ToArray(); }
         }
 
+        public bool HasChanged { get { return m_HasChanged; } }
+
         public MeshFilter Filter
         {
             get
@@ -108,6 +120,79 @@ namespace VoxelEngine.Rendering
             Gizmos.DrawWireCube(VolumeCenter, VolumeSize);
         }
 #endif
+
+        private void Update()
+        {
+            DetectChanges();
+
+            if (m_HasChanged && AutoRegenerate)
+            {
+                GenerateMesh();
+            }
+        }
+
+        private void DetectChanges()
+        {
+            VoxelRenderer[] renderers = GetShapeRenderers();
+            int count = renderers.Where(rend => !m_Renderers.Contains(rend)).Count();
+
+            m_HasChanged = count != 0 || m_LastSize != Size || m_LastRound != Round || m_LastSmooth != Smooth
+                || m_LastVolumeCenter != VolumeCenter || m_LastVolumeSize != VolumeCenter || m_LastVolumeSampling != VolumeSampling;
+
+            if (m_HasChanged)
+            {
+                m_LastSize = Size;
+                m_LastRound = Round;
+                m_LastSmooth = Smooth;
+                m_LastVolumeCenter = VolumeCenter;
+                m_LastVolumeSize = VolumeSize;
+                m_LastVolumeSampling = VolumeSampling;
+                m_Renderers = renderers;
+            }
+
+            if (!m_HasChanged)
+            {
+                foreach (VoxelRenderer rend in m_Renderers)
+                {
+                    m_HasChanged = m_HasChanged || rend.HasChanged || rend.transform.hasChanged;
+                    if (m_HasChanged)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        public VoxelRenderer[] GetShapeRenderers()
+        {
+            List<VoxelRenderer> renderers = new();
+            GetShapeRenderers(this, transform, ref renderers);
+            return renderers.ToArray();
+        }
+
+        private static void GetShapeRenderers(VoxelShape shape, Transform pivot, ref List<VoxelRenderer> renderers)
+        {
+            if (pivot != shape.transform && pivot.GetComponent<VoxelShape>() != null)
+            {
+                return;
+            }
+
+            if (pivot.TryGetComponent(out VoxelRenderer rend))
+            {
+                if (rend.enabled)
+                {
+                    renderers.Add(rend);
+                }
+            }
+
+            Transform[] childs = new bool[pivot.childCount].Select((_, i) => pivot.GetChild(i))
+                .Where(child => child.gameObject.activeInHierarchy).ToArray();
+
+            for (int i = 0; i < childs.Length; i++)
+            {
+                GetShapeRenderers(shape, childs[i], ref renderers);
+            }
+        }
 
         public VoxelPrimitive[] GetShapePrimitives()
         {
@@ -148,7 +233,7 @@ namespace VoxelEngine.Rendering
             return m_Primitives;
         }
 
-        public static void GetShapePrimitives(VoxelShape shape, Transform pivot, int index, int up, int right, ref List<VoxelPrimitive> primitives)
+        private static void GetShapePrimitives(VoxelShape shape, Transform pivot, int index, int up, int right, ref List<VoxelPrimitive> primitives)
         {
             if (pivot != shape.transform && pivot.GetComponent<VoxelShape>() != null)
             {
