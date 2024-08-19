@@ -3,7 +3,7 @@ using UnityEngine;
 namespace VoxelEngine.Rendering
 {
     [CreateAssetMenu(fileName = "Rendering Settings", menuName = "Voxel Engine/Rendering Settings")]
-    public class VoxelRenderingSettings : ScriptableObject
+    public sealed class VoxelRenderingSettings : ScriptableObject
     {
         [field: SerializeField] public ComputeShader MeshBuilder { get; private set; }
 
