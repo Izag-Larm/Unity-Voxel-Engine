@@ -19,7 +19,7 @@ namespace VoxelEngine.Rendering
             {
                 if (shape.AutoRegenerate)
                 {
-                    shape.GenerateMesh();
+                    //shape.GenerateMesh();
                 }
             }
         }
