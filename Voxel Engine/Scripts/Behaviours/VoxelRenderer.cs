@@ -29,12 +29,14 @@ namespace VoxelEngine.Rendering
     public struct VoxelModeling
     {
         public VoxelPrimitiveType type;
-        [Min(0)] public Vector3 size;
-        [Min(0)] public float round;
-        [Min(0)] public float onion;
-        [Min(0)] public float bend;
-        [Min(0)] public float twist;
-        [Min(0)] public Vector3 material;
+        [Min(0f)] public Vector3 size;
+        [Min(0f)] public float round;
+        [Min(0f)] public float onion;
+        [Min(0f)] public float bend;
+        [Min(0f)] public float twist;
+        [Range(0f, 1f)] public float muvx;
+        [Range(0f, 1f)] public float muvy;
+        [Range(0f, 1f)] public float muvz;
 
         public static VoxelModeling Init
         {
@@ -55,9 +57,38 @@ namespace VoxelEngine.Rendering
                 Matrix4x4 matrix = new();
                 matrix.SetRow(0, size);
                 matrix.SetRow(1, new(round, onion, bend, twist));
-                matrix.SetRow(2, new(Mathf.Clamp01(material.x), Mathf.Clamp01(material.y), Mathf.Clamp01(material.z)));
+                matrix.SetRow(2, new(Mathf.Clamp01(muvx), Mathf.Clamp01(muvy), Mathf.Clamp01(muvz)));
                 return matrix;
             }
+        }
+
+        public readonly override int GetHashCode()
+        {
+            return System.HashCode.Combine(type, Matrix);
+        }
+
+        public readonly override bool Equals(object obj)
+        {
+            return obj is VoxelModeling modeling &&
+                type == modeling.type &&
+                size == modeling.size &&
+                round == modeling.round &&
+                onion == modeling.onion &&
+                bend == modeling.bend &&
+                twist == modeling.twist &&
+                muvx == modeling.muvx &&
+                muvy == modeling.muvy &&
+                muvz == modeling.muvz;
+        }
+
+        public static bool operator ==(VoxelModeling left, VoxelModeling right)
+        {
+            return left.Equals(right);
+        }
+
+        public static bool operator !=(VoxelModeling left, VoxelModeling right)
+        {
+            return !(left == right);
         }
     }
 
@@ -76,6 +107,32 @@ namespace VoxelEngine.Rendering
         public static VoxelComposition Init
         {
             get { return new(); }
+        }
+
+        public readonly override int GetHashCode()
+        {
+            return System.HashCode.Combine(dtype, dsmooth, ltype, lsmooth, rtype, rsmooth);
+        }
+
+        public readonly override bool Equals(object obj)
+        {
+            return obj is VoxelComposition composition &&
+                   dtype == composition.dtype &&
+                   dsmooth == composition.dsmooth &&
+                   ltype == composition.ltype &&
+                   lsmooth == composition.lsmooth &&
+                   rtype == composition.rtype &&
+                   rsmooth == composition.rsmooth;
+        }
+
+        public static bool operator ==(VoxelComposition left, VoxelComposition right)
+        {
+            return left.Equals(right);
+        }
+
+        public static bool operator !=(VoxelComposition left, VoxelComposition right)
+        {
+            return !(left == right);
         }
     }
 
@@ -103,10 +160,16 @@ namespace VoxelEngine.Rendering
         public float rsmooth;
     }
 
-    public class VoxelRenderer : MonoBehaviour
+    [ExecuteInEditMode]
+    public sealed class VoxelRenderer : MonoBehaviour
     {
         public VoxelModeling Modeling = VoxelModeling.Init;
         public VoxelComposition Composition = VoxelComposition.Init;
+        
+        private bool m_HasChanged = false;
+
+        private VoxelModeling m_LastModeling = VoxelModeling.Init;
+        private VoxelComposition m_LastComposition = VoxelComposition.Init;
 
         public VoxelPrimitive Primitive
         {
@@ -126,6 +189,24 @@ namespace VoxelEngine.Rendering
                     lsmooth = Composition.lsmooth,
                     rsmooth = Composition.rsmooth,
                 };
+            }
+        }
+
+        public bool HasChanged { get { return m_HasChanged; } }
+
+        private void Update()
+        {
+            DetectChanges();
+        }
+
+        private void DetectChanges()
+        {
+            m_HasChanged = m_LastModeling != Modeling || m_LastComposition != Composition;
+
+            if (m_HasChanged)
+            {
+                m_LastModeling = Modeling;
+                m_LastComposition = Composition;
             }
         }
     }
